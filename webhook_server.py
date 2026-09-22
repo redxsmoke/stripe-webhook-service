@@ -57,9 +57,20 @@ async def stripe_webhook(request: Request):
 
             # Metadata
             metadata = session_data.get("metadata", {}) or {}
+
+            vendor_id = metadata.get("vendor_id")
             guild_id = metadata.get("guild_id")
             admin_id = metadata.get("admin_id")
-            vendor_id = metadata.get("vendor_id")
+
+            # Convert metadata → integers (CRITICAL)
+            if vendor_id is not None:
+                vendor_id = int(vendor_id)
+
+            if guild_id is not None:
+                guild_id = int(guild_id)
+
+            if admin_id is not None:
+                admin_id = int(admin_id)
 
             # Fetch price to determine free vs paid
             price = stripe.Price.retrieve(price_id)
@@ -130,6 +141,7 @@ async def stripe_webhook(request: Request):
         # ============================================================
         elif event_type == "customer.subscription.updated":
             data = raw_data.to_dict()
+
             stripe_sub_id = data["id"]
             status = data["status"]
             cancel_at_period_end = data["cancel_at_period_end"]
@@ -154,11 +166,14 @@ async def stripe_webhook(request: Request):
                     )
                 """, stripe_sub_id)
 
+            print(f"[STRIPE] Subscription updated ({stripe_sub_id}) → {status}")
+
         # ============================================================
         # PAYMENT SUCCEEDED (PAID ONLY)
         # ============================================================
         elif event_type == "invoice.payment_succeeded":
             data = raw_data.to_dict()
+
             stripe_sub_id = data.get("subscription")
 
             period_start = data["lines"]["data"][0]["period"]["start"]
@@ -186,11 +201,14 @@ async def stripe_webhook(request: Request):
                 )
             """, stripe_sub_id, period_end)
 
+            print(f"[STRIPE] Payment succeeded → subscription renewed ({stripe_sub_id})")
+
         # ============================================================
         # PAYMENT FAILED (PAID ONLY)
         # ============================================================
         elif event_type == "invoice.payment_failed":
             data = raw_data.to_dict()
+
             stripe_sub_id = data.get("subscription")
 
             await db.execute("""
@@ -211,6 +229,8 @@ async def stripe_webhook(request: Request):
                     WHERE stripe_subscription_id = $1
                 )
             """, stripe_sub_id)
+
+            print(f"[STRIPE] Payment failed ({stripe_sub_id})")
 
     finally:
         await db.close()
