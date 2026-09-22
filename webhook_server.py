@@ -30,12 +30,13 @@ async def stripe_webhook(request: Request):
     except stripe.error.SignatureVerificationError:
         return JSONResponse({"error": "Invalid signature"}, status_code=400)
 
+    # Convert Stripe object → dict (CRITICAL FIX)
+    data = event["data"]["object"].to_dict()
+    event_type = event["type"]
+
     db = await get_db()
 
     try:
-        event_type = event["type"]
-        data = event["data"]["object"]
-
         # Common metadata
         metadata = data.get("metadata", {}) or {}
         guild_id = metadata.get("guild_id")
