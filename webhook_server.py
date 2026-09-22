@@ -30,26 +30,36 @@ async def stripe_webhook(request: Request):
     except stripe.error.SignatureVerificationError:
         return JSONResponse({"error": "Invalid signature"}, status_code=400)
 
-    # Convert Stripe object → dict (CRITICAL FIX)
-    data = event["data"]["object"].to_dict()
     event_type = event["type"]
+    raw_data = event["data"]["object"]
+    data = raw_data.to_dict()
 
     db = await get_db()
 
     try:
-        # Common metadata
-        metadata = data.get("metadata", {}) or {}
-        guild_id = metadata.get("guild_id")
-        admin_id = metadata.get("admin_id")
-        vendor_id = metadata.get("vendor_id")
-
         # ============================================================
         # CHECKOUT SESSION COMPLETED (FREE + PAID)
         # ============================================================
         if event_type == "checkout.session.completed":
-            stripe_sub_id = data.get("subscription")
-            stripe_customer_id = data.get("customer")
-            price_id = metadata.get("price_id") or data.get("price")
+
+            # Retrieve full session with line_items expanded
+            session = stripe.checkout.Session.retrieve(
+                data["id"],
+                expand=["line_items"]
+            )
+            session_data = session.to_dict()
+
+            stripe_sub_id = session_data.get("subscription")
+            stripe_customer_id = session_data.get("customer")
+
+            # Extract price_id correctly
+            price_id = session_data["line_items"]["data"][0]["price"]["id"]
+
+            # Metadata
+            metadata = session_data.get("metadata", {}) or {}
+            guild_id = metadata.get("guild_id")
+            admin_id = metadata.get("admin_id")
+            vendor_id = metadata.get("vendor_id")
 
             # Fetch price to determine free vs paid
             price = stripe.Price.retrieve(price_id)
@@ -116,9 +126,10 @@ async def stripe_webhook(request: Request):
             print(f"[STRIPE] Checkout completed → subscription created ({stripe_sub_id})")
 
         # ============================================================
-        # SUBSCRIPTION UPDATED (CANCEL, PAUSE, PLAN CHANGE)
+        # SUBSCRIPTION UPDATED
         # ============================================================
         elif event_type == "customer.subscription.updated":
+            data = raw_data.to_dict()
             stripe_sub_id = data["id"]
             status = data["status"]
             cancel_at_period_end = data["cancel_at_period_end"]
@@ -131,7 +142,6 @@ async def stripe_webhook(request: Request):
                 WHERE stripe_subscription_id = $1
             """, stripe_sub_id, status, cancel_at_period_end)
 
-            # Disable license if canceled or unpaid
             if status in ("canceled", "unpaid", "past_due"):
                 await db.execute("""
                     UPDATE guild_settings
@@ -144,12 +154,11 @@ async def stripe_webhook(request: Request):
                     )
                 """, stripe_sub_id)
 
-            print(f"[STRIPE] Subscription updated ({stripe_sub_id}) → {status}")
-
         # ============================================================
-        # PAYMENT SUCCEEDED (PAID TIERS ONLY)
+        # PAYMENT SUCCEEDED (PAID ONLY)
         # ============================================================
         elif event_type == "invoice.payment_succeeded":
+            data = raw_data.to_dict()
             stripe_sub_id = data.get("subscription")
 
             period_start = data["lines"]["data"][0]["period"]["start"]
@@ -177,12 +186,11 @@ async def stripe_webhook(request: Request):
                 )
             """, stripe_sub_id, period_end)
 
-            print(f"[STRIPE] Payment succeeded → subscription renewed ({stripe_sub_id})")
-
         # ============================================================
-        # PAYMENT FAILED (PAID TIERS ONLY)
+        # PAYMENT FAILED (PAID ONLY)
         # ============================================================
         elif event_type == "invoice.payment_failed":
+            data = raw_data.to_dict()
             stripe_sub_id = data.get("subscription")
 
             await db.execute("""
@@ -203,8 +211,6 @@ async def stripe_webhook(request: Request):
                     WHERE stripe_subscription_id = $1
                 )
             """, stripe_sub_id)
-
-            print(f"[STRIPE] Payment failed ({stripe_sub_id})")
 
     finally:
         await db.close()
