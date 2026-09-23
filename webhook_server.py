@@ -156,6 +156,7 @@ async def stripe_webhook(request: Request):
             status = data["status"]
             cancel_at_period_end = data["cancel_at_period_end"]
 
+            # These are the epoch timestamps you pasted from Stripe
             current_period_start = data.get("current_period_start")
             current_period_end = data.get("current_period_end")
 
@@ -163,8 +164,14 @@ async def stripe_webhook(request: Request):
                 UPDATE subscriptions
                 SET status = $2,
                     cancel_at_period_end = $3,
-                    current_period_start = CASE WHEN $4 IS NOT NULL THEN to_timestamp($4) ELSE current_period_start END,
-                    current_period_end = CASE WHEN $5 IS NOT NULL THEN to_timestamp($5) ELSE current_period_end END,
+                    current_period_start = CASE
+                        WHEN $4 IS NOT NULL THEN to_timestamp($4)
+                        ELSE current_period_start
+                    END,
+                    current_period_end = CASE
+                        WHEN $5 IS NOT NULL THEN to_timestamp($5)
+                        ELSE current_period_end
+                    END,
                     updated_at = NOW()
                 WHERE stripe_subscription_id = $1
             """, stripe_sub_id, status, cancel_at_period_end, current_period_start, current_period_end)
@@ -174,6 +181,7 @@ async def stripe_webhook(request: Request):
                 SET license_active = CASE WHEN $2 = 'active' THEN TRUE ELSE FALSE END,
                     license_last_checked = NOW(),
                     license_expires_at = CASE
+                        WHEN $5 IS NOT NULL THEN to_timestamp($5)
                         WHEN $2 = 'canceled' THEN NOW()
                         ELSE license_expires_at
                     END,
@@ -187,9 +195,12 @@ async def stripe_webhook(request: Request):
                     FROM subscriptions
                     WHERE stripe_subscription_id = $1
                 )
-            """, stripe_sub_id, status)
+            """, stripe_sub_id, status, current_period_end)
 
-            print(f"[STRIPE] Subscription updated ({stripe_sub_id}) → {status}")
+            print(
+                f"[STRIPE] Subscription updated ({stripe_sub_id}) → {status} "
+                f"period_start={current_period_start} period_end={current_period_end}"
+            )
 
         # ============================================================
         # PAYMENT SUCCEEDED
@@ -200,7 +211,7 @@ async def stripe_webhook(request: Request):
             if not stripe_sub_id:
                 return {"status": "ok"}
 
-            # Get the subscription object and use its current_period_* fields
+            # Optional: keep this as a safety refresh from the subscription object
             sub = stripe.Subscription.retrieve(stripe_sub_id)
             current_period_start = sub["current_period_start"]
             current_period_end = sub["current_period_end"]
@@ -232,7 +243,10 @@ async def stripe_webhook(request: Request):
                 )
             """, stripe_sub_id, current_period_end)
 
-            print(f"[STRIPE] Payment succeeded ({stripe_sub_id})")
+            print(
+                f"[STRIPE] Payment succeeded ({stripe_sub_id}) "
+                f"period_start={current_period_start} period_end={current_period_end}"
+            )
 
         # ============================================================
         # PAYMENT FAILED
