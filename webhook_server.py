@@ -137,7 +137,7 @@ async def stripe_webhook(request: Request):
             print(f"[STRIPE] Checkout completed → subscription created ({stripe_sub_id})")
 
         # ============================================================
-        # SUBSCRIPTION UPDATED
+        # SUBSCRIPTION UPDATED (CANCEL, PAUSE, PLAN CHANGE)
         # ============================================================
         elif event_type == "customer.subscription.updated":
             data = raw_data.to_dict()
