@@ -38,10 +38,10 @@ async def stripe_webhook(request: Request):
 
     try:
         # ============================================================
-        # CHECKOUT SESSION COMPLETED (FREE + PAID)
+        # CHECKOUT SESSION COMPLETED
         # ============================================================
         if event_type == "checkout.session.completed":
-            # Retrieve full session with line_items expanded
+
             session = stripe.checkout.Session.retrieve(
                 data["id"],
                 expand=["line_items"]
@@ -51,41 +51,25 @@ async def stripe_webhook(request: Request):
             stripe_sub_id = session_data.get("subscription")
             stripe_customer_id = session_data.get("customer")
 
-            # If no subscription ID, skip insert
             if not stripe_sub_id:
-                print("[STRIPE] checkout.session.completed without subscription_id — skipping")
+                print("[STRIPE] No subscription ID — skipping")
                 return {"status": "ok"}
 
-            # Verify subscription actually exists in Stripe
             try:
                 sub = stripe.Subscription.retrieve(stripe_sub_id)
             except stripe.error.InvalidRequestError:
-                print(f"[STRIPE] Subscription {stripe_sub_id} does not exist — skipping insert")
+                print(f"[STRIPE] Subscription {stripe_sub_id} does not exist — skipping")
                 return {"status": "ok"}
 
-            # Extract price_id correctly
             price_id = session_data["line_items"]["data"][0]["price"]["id"]
 
-            # Metadata
             metadata = session_data.get("metadata", {}) or {}
+            vendor_id = int(metadata.get("vendor_id"))
+            guild_id = int(metadata.get("guild_id"))
+            admin_id = int(metadata.get("admin_id"))
 
-            vendor_id = metadata.get("vendor_id")
-            guild_id = metadata.get("guild_id")
-            admin_id = metadata.get("admin_id")
-
-            # Convert metadata → integers
-            if vendor_id is not None:
-                vendor_id = int(vendor_id)
-
-            if guild_id is not None:
-                guild_id = int(guild_id)
-
-            if admin_id is not None:
-                admin_id = int(admin_id)
-
-            # Fetch price to determine free vs paid
             price = stripe.Price.retrieve(price_id)
-            amount = price["unit_amount"]  # cents
+            amount = price["unit_amount"]
 
             # Prevent duplicate subscription rows
             existing = await db.fetchrow("""
@@ -94,10 +78,8 @@ async def stripe_webhook(request: Request):
                 WHERE stripe_subscription_id = $1
             """, stripe_sub_id)
 
-            if existing:
-                print(f"[STRIPE] Subscription {stripe_sub_id} already exists — skipping insert")
-            else:
-                # Mark any previous subscriptions for this guild as canceled
+            if not existing:
+                # Cancel old subscriptions for this guild
                 await db.execute("""
                     UPDATE subscriptions
                     SET status = 'canceled'
@@ -105,7 +87,7 @@ async def stripe_webhook(request: Request):
                       AND stripe_subscription_id != $2
                 """, guild_id, stripe_sub_id)
 
-                # Insert subscription row
+                # Insert new subscription
                 await db.execute("""
                     INSERT INTO subscriptions (
                         vendor_id,
@@ -129,7 +111,6 @@ async def stripe_webhook(request: Request):
                         NOW(),
                         NOW()
                     )
-                    ON CONFLICT (stripe_subscription_id) DO NOTHING
                 """, vendor_id, guild_id, stripe_sub_id, stripe_customer_id, price_id)
 
             # Fetch subscription_id
@@ -139,13 +120,9 @@ async def stripe_webhook(request: Request):
                 WHERE stripe_subscription_id = $1
             """, stripe_sub_id)
 
-            if not sub_row:
-                print(f"[STRIPE] No DB row found for subscription {stripe_sub_id} after insert — skipping guild_settings")
-                return {"status": "ok"}
-
             subscription_pk = sub_row["subscription_id"]
 
-            # Insert guild_settings row if missing
+            # ALWAYS update guild_settings
             await db.execute("""
                 INSERT INTO guild_settings (
                     guild_id,
@@ -164,17 +141,22 @@ async def stripe_webhook(request: Request):
                     NOW(),
                     $5
                 )
-                ON CONFLICT (guild_id) DO NOTHING
+                ON CONFLICT (guild_id)
+                DO UPDATE SET
+                    subscription_id = EXCLUDED.subscription_id,
+                    vendor_id = EXCLUDED.vendor_id,
+                    license_active = TRUE,
+                    license_expires_at = NOW(),
+                    license_last_checked = NOW(),
+                    metadata = EXCLUDED.metadata
             """, guild_id, admin_id, subscription_pk, vendor_id, json.dumps(metadata))
 
-            print(f"[STRIPE] Checkout completed → subscription created ({stripe_sub_id})")
+            print(f"[STRIPE] Subscription created ({stripe_sub_id})")
 
         # ============================================================
-        # SUBSCRIPTION UPDATED (CANCEL, PAUSE, PLAN CHANGE)
+        # SUBSCRIPTION UPDATED
         # ============================================================
         elif event_type == "customer.subscription.updated":
-            data = raw_data.to_dict()
-
             stripe_sub_id = data["id"]
             status = data["status"]
             cancel_at_period_end = data["cancel_at_period_end"]
@@ -187,30 +169,27 @@ async def stripe_webhook(request: Request):
                 WHERE stripe_subscription_id = $1
             """, stripe_sub_id, status, cancel_at_period_end)
 
-            if status in ("canceled", "unpaid", "past_due"):
-                await db.execute("""
-                    UPDATE guild_settings
-                    SET license_active = FALSE,
-                        license_last_checked = NOW()
-                    WHERE subscription_id = (
-                        SELECT subscription_id
-                        FROM subscriptions
-                        WHERE stripe_subscription_id = $1
-                    )
-                """, stripe_sub_id)
+            # Update guild_settings
+            await db.execute("""
+                UPDATE guild_settings
+                SET license_active = CASE WHEN $2 = 'active' THEN TRUE ELSE FALSE END,
+                    license_last_checked = NOW()
+                WHERE subscription_id = (
+                    SELECT subscription_id
+                    FROM subscriptions
+                    WHERE stripe_subscription_id = $1
+                )
+            """, stripe_sub_id, status)
 
             print(f"[STRIPE] Subscription updated ({stripe_sub_id}) → {status}")
 
         # ============================================================
-        # PAYMENT SUCCEEDED (PAID ONLY)
+        # PAYMENT SUCCEEDED
         # ============================================================
         elif event_type == "invoice.payment_succeeded":
-            data = raw_data.to_dict()
-
             stripe_sub_id = data.get("subscription")
 
             if not stripe_sub_id:
-                print("[STRIPE] invoice.payment_succeeded without subscription_id — skipping")
                 return {"status": "ok"}
 
             period_start = data["lines"]["data"][0]["period"]["start"]
@@ -238,18 +217,15 @@ async def stripe_webhook(request: Request):
                 )
             """, stripe_sub_id, period_end)
 
-            print(f"[STRIPE] Payment succeeded → subscription renewed ({stripe_sub_id})")
+            print(f"[STRIPE] Payment succeeded ({stripe_sub_id})")
 
         # ============================================================
-        # PAYMENT FAILED (PAID ONLY)
+        # PAYMENT FAILED
         # ============================================================
         elif event_type == "invoice.payment_failed":
-            data = raw_data.to_dict()
-
             stripe_sub_id = data.get("subscription")
 
             if not stripe_sub_id:
-                print("[STRIPE] invoice.payment_failed without subscription_id — skipping")
                 return {"status": "ok"}
 
             await db.execute("""
