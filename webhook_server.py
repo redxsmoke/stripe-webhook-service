@@ -87,7 +87,7 @@ async def stripe_webhook(request: Request):
                       AND stripe_subscription_id != $2
                 """, guild_id, stripe_sub_id)
 
-                # Insert new subscription
+                # Insert new subscription (NO MORE WRONG NOW() PERIOD DATES)
                 await db.execute("""
                     INSERT INTO subscriptions (
                         vendor_id,
@@ -106,8 +106,8 @@ async def stripe_webhook(request: Request):
                         $1, $2, $3, $4, $5,
                         'active',
                         FALSE,
-                        NOW(),
-                        NOW(),
+                        NULL,
+                        NULL,
                         NOW(),
                         NOW()
                     )
@@ -122,7 +122,7 @@ async def stripe_webhook(request: Request):
 
             subscription_pk = sub_row["subscription_id"]
 
-            # ALWAYS update guild_settings
+            # ALWAYS update guild_settings (NO MORE WRONG license_expires_at)
             await db.execute("""
                 INSERT INTO guild_settings (
                     guild_id,
@@ -137,7 +137,7 @@ async def stripe_webhook(request: Request):
                 VALUES (
                     $1, $2, $3, $4,
                     TRUE,
-                    NOW(),
+                    NULL,
                     NOW(),
                     $5
                 )
@@ -146,13 +146,12 @@ async def stripe_webhook(request: Request):
                     subscription_id = EXCLUDED.subscription_id,
                     vendor_id = EXCLUDED.vendor_id,
                     license_active = TRUE,
-                    license_expires_at = NOW(),
+                    license_expires_at = NULL,
                     license_last_checked = NOW(),
                     metadata = EXCLUDED.metadata
             """, guild_id, admin_id, subscription_pk, vendor_id, json.dumps(metadata))
 
             print(f"[STRIPE] Subscription created ({stripe_sub_id})")
-
         # ============================================================
         # SUBSCRIPTION UPDATED
         # ============================================================
@@ -191,7 +190,6 @@ async def stripe_webhook(request: Request):
             """, stripe_sub_id, status)
 
             print(f"[STRIPE] Subscription updated ({stripe_sub_id}) → {status}")
-
         # ============================================================
         # PAYMENT SUCCEEDED
         # ============================================================
@@ -267,8 +265,10 @@ async def stripe_webhook(request: Request):
             """, stripe_sub_id)
 
             print(f"[STRIPE] Payment failed ({stripe_sub_id})")
-
     finally:
         await db.close()
 
     return {"status": "ok"}
+
+
+
