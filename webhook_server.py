@@ -169,13 +169,22 @@ async def stripe_webhook(request: Request):
                 WHERE stripe_subscription_id = $1
             """, stripe_sub_id, status, cancel_at_period_end)
 
-            # Update guild_settings
+            # Update guild_settings (keep subscription_id in sync, set license flags)
             await db.execute("""
                 UPDATE guild_settings
                 SET license_active = CASE WHEN $2 = 'active' THEN TRUE ELSE FALSE END,
-                    license_last_checked = NOW()
-                WHERE subscription_id = (
-                    SELECT subscription_id
+                    license_last_checked = NOW(),
+                    license_expires_at = CASE
+                        WHEN $2 = 'canceled' THEN NOW()
+                        ELSE license_expires_at
+                    END,
+                    subscription_id = (
+                        SELECT subscription_id
+                        FROM subscriptions
+                        WHERE stripe_subscription_id = $1
+                    )
+                WHERE guild_id = (
+                    SELECT guild_id
                     FROM subscriptions
                     WHERE stripe_subscription_id = $1
                 )
@@ -209,9 +218,14 @@ async def stripe_webhook(request: Request):
                 UPDATE guild_settings
                 SET license_active = TRUE,
                     license_expires_at = to_timestamp($2),
-                    license_last_checked = NOW()
-                WHERE subscription_id = (
-                    SELECT subscription_id
+                    license_last_checked = NOW(),
+                    subscription_id = (
+                        SELECT subscription_id
+                        FROM subscriptions
+                        WHERE stripe_subscription_id = $1
+                    )
+                WHERE guild_id = (
+                    SELECT guild_id
                     FROM subscriptions
                     WHERE stripe_subscription_id = $1
                 )
@@ -239,9 +253,14 @@ async def stripe_webhook(request: Request):
             await db.execute("""
                 UPDATE guild_settings
                 SET license_active = FALSE,
-                    license_last_checked = NOW()
-                WHERE subscription_id = (
-                    SELECT subscription_id
+                    license_last_checked = NOW(),
+                    subscription_id = (
+                        SELECT subscription_id
+                        FROM subscriptions
+                        WHERE stripe_subscription_id = $1
+                    )
+                WHERE guild_id = (
+                    SELECT guild_id
                     FROM subscriptions
                     WHERE stripe_subscription_id = $1
                 )
