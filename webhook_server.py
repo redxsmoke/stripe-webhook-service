@@ -30,7 +30,18 @@ async def stripe_webhook(request: Request):
     except stripe.error.SignatureVerificationError:
         return JSONResponse({"error": "Invalid signature"}, status_code=400)
 
-    event_type = event["type"]
+    # ⭐ OPTION C — Expand everything Stripe recommends
+    if event["type"] == "invoice.payment_succeeded":
+        event = stripe.Event.retrieve(
+            event["id"],
+            expand=[
+                "data.object.lines",
+                "data.object.lines.data.period",
+                "data.object.subscription",
+                "data.object.customer"
+            ]
+        )
+
     raw_data = event["data"]["object"]
     data = raw_data.to_dict()
 
@@ -40,7 +51,7 @@ async def stripe_webhook(request: Request):
         # ============================================================
         # CHECKOUT SESSION COMPLETED
         # ============================================================
-        if event_type == "checkout.session.completed":
+        if event["type"] == "checkout.session.completed":
 
             session = stripe.checkout.Session.retrieve(
                 data["id"],
@@ -71,7 +82,6 @@ async def stripe_webhook(request: Request):
             price = stripe.Price.retrieve(price_id)
             amount = price["unit_amount"]
 
-            # Prevent duplicate subscription rows
             existing = await db.fetchrow("""
                 SELECT subscription_id
                 FROM subscriptions
@@ -79,7 +89,6 @@ async def stripe_webhook(request: Request):
             """, stripe_sub_id)
 
             if not existing:
-                # Cancel old subscriptions for this guild
                 await db.execute("""
                     UPDATE subscriptions
                     SET status = 'canceled'
@@ -87,7 +96,6 @@ async def stripe_webhook(request: Request):
                       AND stripe_subscription_id != $2
                 """, guild_id, stripe_sub_id)
 
-                # Insert new subscription (NO MORE WRONG NOW() PERIOD DATES)
                 await db.execute("""
                     INSERT INTO subscriptions (
                         vendor_id,
@@ -113,7 +121,6 @@ async def stripe_webhook(request: Request):
                     )
                 """, vendor_id, guild_id, stripe_sub_id, stripe_customer_id, price_id)
 
-            # Fetch subscription_id
             sub_row = await db.fetchrow("""
                 SELECT subscription_id
                 FROM subscriptions
@@ -122,7 +129,6 @@ async def stripe_webhook(request: Request):
 
             subscription_pk = sub_row["subscription_id"]
 
-            # ALWAYS update guild_settings (NO MORE WRONG license_expires_at)
             await db.execute("""
                 INSERT INTO guild_settings (
                     guild_id,
@@ -155,7 +161,7 @@ async def stripe_webhook(request: Request):
         # ============================================================
         # SUBSCRIPTION UPDATED
         # ============================================================
-        elif event_type == "customer.subscription.updated":
+        elif event["type"] == "customer.subscription.updated":
             stripe_sub_id = data["id"]
             status = data["status"]
             cancel_at_period_end = data["cancel_at_period_end"]
@@ -168,7 +174,6 @@ async def stripe_webhook(request: Request):
                 WHERE stripe_subscription_id = $1
             """, stripe_sub_id, status, cancel_at_period_end)
 
-            # Update guild_settings (keep subscription_id in sync, set license flags)
             await db.execute("""
                 UPDATE guild_settings
                 SET license_active = CASE WHEN $2 = 'active' THEN TRUE ELSE FALSE END,
@@ -193,12 +198,13 @@ async def stripe_webhook(request: Request):
         # ============================================================
         # PAYMENT SUCCEEDED
         # ============================================================
-        elif event_type == "invoice.payment_succeeded":
+        elif event["type"] == "invoice.payment_succeeded":
             stripe_sub_id = data.get("subscription")
 
             if not stripe_sub_id:
                 return {"status": "ok"}
 
+            # ⭐ Now guaranteed to exist because of Option C expansion
             period_start = data["lines"]["data"][0]["period"]["start"]
             period_end = data["lines"]["data"][0]["period"]["end"]
 
@@ -234,7 +240,7 @@ async def stripe_webhook(request: Request):
         # ============================================================
         # PAYMENT FAILED
         # ============================================================
-        elif event_type == "invoice.payment_failed":
+        elif event["type"] == "invoice.payment_failed":
             stripe_sub_id = data.get("subscription")
 
             if not stripe_sub_id:
@@ -269,6 +275,5 @@ async def stripe_webhook(request: Request):
         await db.close()
 
     return {"status": "ok"}
-
 
 
