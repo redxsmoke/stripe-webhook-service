@@ -176,7 +176,7 @@ async def stripe_webhook(request: Request):
                 """
                 UPDATE subscriptions
                 SET status = $2,
-                    cancel_at_period_end = $3,
+                    cancel_at_period_end = COALESCE($3::boolean, FALSE),
                     current_period_start = to_timestamp($4::double precision),
                     current_period_end = to_timestamp($5::double precision),
                     updated_at = NOW()
@@ -232,7 +232,7 @@ async def stripe_webhook(request: Request):
                 """
                 UPDATE subscriptions
                 SET status = $2,
-                    cancel_at_period_end = $3,
+                    cancel_at_period_end = COALESCE($3::boolean, FALSE),
                     current_period_start = to_timestamp($4::double precision),
                     current_period_end = to_timestamp($5::double precision),
                     updated_at = NOW()
