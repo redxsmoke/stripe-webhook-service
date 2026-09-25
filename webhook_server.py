@@ -32,7 +32,7 @@ async def stripe_webhook(request: Request):
         return JSONResponse({"error": "Invalid signature"}, status_code=400)
 
     event_type = event["type"]
-    data = event["data"]["object"]  # correct
+    data = event["data"]["object"]
 
     db = await get_db()
 
@@ -143,16 +143,10 @@ async def stripe_webhook(request: Request):
         # ============================================================
         elif event_type == "customer.subscription.created":
             stripe_sub_id = data["id"]
-
-            sub = stripe.Subscription.retrieve(
-                stripe_sub_id,
-                expand=["items.data"]
-            )
-
-            status = sub["status"]
-            cancel_at_period_end = sub["cancel_at_period_end"]
-            current_period_start = sub["current_period_start"]
-            current_period_end = sub["current_period_end"]
+            status = data["status"]
+            cancel_at_period_end = data["cancel_at_period_end"]
+            current_period_start = data["current_period_start"]
+            current_period_end = data["current_period_end"]
 
             await db.execute("""
                 UPDATE subscriptions
@@ -193,16 +187,10 @@ async def stripe_webhook(request: Request):
         # ============================================================
         elif event_type == "customer.subscription.updated":
             stripe_sub_id = data["id"]
-
-            sub = stripe.Subscription.retrieve(
-                stripe_sub_id,
-                expand=["items.data"]
-            )
-
-            status = sub["status"]
-            cancel_at_period_end = sub["cancel_at_period_end"]
-            current_period_start = sub["current_period_start"]
-            current_period_end = sub["current_period_end"]
+            status = data["status"]
+            cancel_at_period_end = data["cancel_at_period_end"]
+            current_period_start = data["current_period_start"]
+            current_period_end = data["current_period_end"]
 
             await db.execute("""
                 UPDATE subscriptions
@@ -247,13 +235,10 @@ async def stripe_webhook(request: Request):
             if not stripe_sub_id:
                 return {"status": "ok"}
 
-            sub = stripe.Subscription.retrieve(
-                stripe_sub_id,
-                expand=["items.data"]
-            )
-
-            current_period_start = sub["current_period_start"]
-            current_period_end = sub["current_period_end"]
+            # Period dates live in the invoice line item
+            line_item = data["lines"]["data"][0]
+            period_start = line_item["period"]["start"]
+            period_end = line_item["period"]["end"]
 
             await db.execute("""
                 UPDATE subscriptions
@@ -263,7 +248,7 @@ async def stripe_webhook(request: Request):
                     current_period_end = to_timestamp($3),
                     updated_at = NOW()
                 WHERE stripe_subscription_id = $1
-            """, stripe_sub_id, current_period_start, current_period_end)
+            """, stripe_sub_id, period_start, period_end)
 
             await db.execute("""
                 UPDATE guild_settings
@@ -280,11 +265,11 @@ async def stripe_webhook(request: Request):
                     FROM subscriptions
                     WHERE stripe_subscription_id = $1
                 )
-            """, stripe_sub_id, current_period_start, current_period_end)
+            """, stripe_sub_id, period_start, period_end)
 
             print(
                 f"[STRIPE] Payment succeeded ({stripe_sub_id}) "
-                f"period_start={current_period_start} period_end={current_period_end}"
+                f"period_start={period_start} period_end={period_end}"
             )
 
         # ============================================================
