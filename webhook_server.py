@@ -152,8 +152,8 @@ async def stripe_webhook(request: Request):
                 UPDATE subscriptions
                 SET status = $2,
                     cancel_at_period_end = $3,
-                    current_period_start = to_timestamp($4),
-                    current_period_end = to_timestamp($5),
+                    current_period_start = to_timestamp($4::double precision),
+                    current_period_end = to_timestamp($5::double precision),
                     updated_at = NOW()
                 WHERE stripe_subscription_id = $1
             """, stripe_sub_id, status, cancel_at_period_end,
@@ -163,7 +163,7 @@ async def stripe_webhook(request: Request):
                 UPDATE guild_settings
                 SET license_active = CASE WHEN $2 = 'active' THEN TRUE ELSE FALSE END,
                     license_last_checked = NOW(),
-                    license_expires_at = to_timestamp($5),
+                    license_expires_at = to_timestamp($5::double precision),
                     subscription_id = (
                         SELECT subscription_id
                         FROM subscriptions
@@ -196,8 +196,8 @@ async def stripe_webhook(request: Request):
                 UPDATE subscriptions
                 SET status = $2,
                     cancel_at_period_end = $3,
-                    current_period_start = to_timestamp($4),
-                    current_period_end = to_timestamp($5),
+                    current_period_start = to_timestamp($4::double precision),
+                    current_period_end = to_timestamp($5::double precision),
                     updated_at = NOW()
                 WHERE stripe_subscription_id = $1
             """, stripe_sub_id, status, cancel_at_period_end,
@@ -207,7 +207,7 @@ async def stripe_webhook(request: Request):
                 UPDATE guild_settings
                 SET license_active = CASE WHEN $2 = 'active' THEN TRUE ELSE FALSE END,
                     license_last_checked = NOW(),
-                    license_expires_at = to_timestamp($5),
+                    license_expires_at = to_timestamp($5::double precision),
                     subscription_id = (
                         SELECT subscription_id
                         FROM subscriptions
@@ -235,7 +235,7 @@ async def stripe_webhook(request: Request):
             if not stripe_sub_id:
                 return {"status": "ok"}
 
-            # Period dates live in the invoice line item
+            # Period dates from invoice line item
             line_item = data["lines"]["data"][0]
             period_start = line_item["period"]["start"]
             period_end = line_item["period"]["end"]
@@ -244,8 +244,8 @@ async def stripe_webhook(request: Request):
                 UPDATE subscriptions
                 SET status = 'active',
                     cancel_at_period_end = FALSE,
-                    current_period_start = to_timestamp($2),
-                    current_period_end = to_timestamp($3),
+                    current_period_start = to_timestamp($2::double precision),
+                    current_period_end = to_timestamp($3::double precision),
                     updated_at = NOW()
                 WHERE stripe_subscription_id = $1
             """, stripe_sub_id, period_start, period_end)
@@ -253,7 +253,7 @@ async def stripe_webhook(request: Request):
             await db.execute("""
                 UPDATE guild_settings
                 SET license_active = TRUE,
-                    license_expires_at = to_timestamp($3),
+                    license_expires_at = to_timestamp($3::double precision),
                     license_last_checked = NOW(),
                     subscription_id = (
                         SELECT subscription_id
