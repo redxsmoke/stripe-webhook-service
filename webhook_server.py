@@ -185,7 +185,6 @@ async def stripe_webhook(request: Request):
                 current_period_end,
             )
 
-            # FIXED: Only 3 parameters, no unused $3/$4
             await db.execute(
                 """
                 UPDATE guild_settings
@@ -206,6 +205,18 @@ async def stripe_webhook(request: Request):
                 stripe_sub_id,
                 status,
                 current_period_end,
+            )
+
+            # ⭐ SYNC UPDATE — ALWAYS ENSURES license_expires_at IS CORRECT
+            await db.execute(
+                """
+                UPDATE guild_settings gs
+                SET license_expires_at = s.current_period_end
+                FROM subscriptions s
+                WHERE gs.subscription_id = s.subscription_id
+                  AND s.stripe_subscription_id = $1
+                """,
+                stripe_sub_id,
             )
 
         # ============================================================
@@ -235,7 +246,6 @@ async def stripe_webhook(request: Request):
                 current_period_end,
             )
 
-            # FIXED: Only 3 parameters, no unused $3/$4
             await db.execute(
                 """
                 UPDATE guild_settings
@@ -256,6 +266,18 @@ async def stripe_webhook(request: Request):
                 stripe_sub_id,
                 status,
                 current_period_end,
+            )
+
+            # ⭐ SYNC UPDATE — ALWAYS ENSURES license_expires_at IS CORRECT
+            await db.execute(
+                """
+                UPDATE guild_settings gs
+                SET license_expires_at = s.current_period_end
+                FROM subscriptions s
+                WHERE gs.subscription_id = s.subscription_id
+                  AND s.stripe_subscription_id = $1
+                """,
+                stripe_sub_id,
             )
 
         # ============================================================
@@ -297,6 +319,18 @@ async def stripe_webhook(request: Request):
                 stripe_sub_id,
             )
 
+            # ⭐ SYNC UPDATE — ALWAYS ENSURES license_expires_at IS CORRECT
+            await db.execute(
+                """
+                UPDATE guild_settings gs
+                SET license_expires_at = s.current_period_end
+                FROM subscriptions s
+                WHERE gs.subscription_id = s.subscription_id
+                  AND s.stripe_subscription_id = $1
+                """,
+                stripe_sub_id,
+            )
+
         # ============================================================
         # PAYMENT FAILED
         # ============================================================
@@ -332,6 +366,18 @@ async def stripe_webhook(request: Request):
                     FROM subscriptions
                     WHERE stripe_subscription_id = $1
                 )
+                """,
+                stripe_sub_id,
+            )
+
+            # ⭐ SYNC UPDATE — STILL SAFE EVEN ON FAILURE
+            await db.execute(
+                """
+                UPDATE guild_settings gs
+                SET license_expires_at = s.current_period_end
+                FROM subscriptions s
+                WHERE gs.subscription_id = s.subscription_id
+                  AND s.stripe_subscription_id = $1
                 """,
                 stripe_sub_id,
             )
