@@ -32,7 +32,7 @@ async def stripe_webhook(request: Request):
         return JSONResponse({"error": "Invalid signature"}, status_code=400)
 
     event_type = event["type"]
-    data = event["data"]["object"]
+    data = event["data"]["object"]  # correct
 
     db = await get_db()
 
@@ -146,7 +146,7 @@ async def stripe_webhook(request: Request):
 
             sub = stripe.Subscription.retrieve(
                 stripe_sub_id,
-                expand=["items", "latest_invoice"]
+                expand=["items.data"]
             )
 
             status = sub["status"]
@@ -196,7 +196,7 @@ async def stripe_webhook(request: Request):
 
             sub = stripe.Subscription.retrieve(
                 stripe_sub_id,
-                expand=["items", "latest_invoice"]
+                expand=["items.data"]
             )
 
             status = sub["status"]
@@ -249,7 +249,7 @@ async def stripe_webhook(request: Request):
 
             sub = stripe.Subscription.retrieve(
                 stripe_sub_id,
-                expand=["items", "latest_invoice"]
+                expand=["items.data"]
             )
 
             current_period_start = sub["current_period_start"]
