@@ -32,7 +32,7 @@ async def stripe_webhook(request: Request):
         return JSONResponse({"error": "Invalid signature"}, status_code=400)
 
     event_type = event["type"]
-    data = event["data"]["object"]  # FIXED: no .to_dict()
+    data = event["data"]["object"]
 
     db = await get_db()
 
@@ -144,7 +144,11 @@ async def stripe_webhook(request: Request):
         elif event_type == "customer.subscription.created":
             stripe_sub_id = data["id"]
 
-            sub = stripe.Subscription.retrieve(stripe_sub_id)
+            sub = stripe.Subscription.retrieve(
+                stripe_sub_id,
+                expand=["items", "latest_invoice"]
+            )
+
             status = sub["status"]
             cancel_at_period_end = sub["cancel_at_period_end"]
             current_period_start = sub["current_period_start"]
@@ -190,7 +194,11 @@ async def stripe_webhook(request: Request):
         elif event_type == "customer.subscription.updated":
             stripe_sub_id = data["id"]
 
-            sub = stripe.Subscription.retrieve(stripe_sub_id)
+            sub = stripe.Subscription.retrieve(
+                stripe_sub_id,
+                expand=["items", "latest_invoice"]
+            )
+
             status = sub["status"]
             cancel_at_period_end = sub["cancel_at_period_end"]
             current_period_start = sub["current_period_start"]
@@ -239,7 +247,11 @@ async def stripe_webhook(request: Request):
             if not stripe_sub_id:
                 return {"status": "ok"}
 
-            sub = stripe.Subscription.retrieve(stripe_sub_id)
+            sub = stripe.Subscription.retrieve(
+                stripe_sub_id,
+                expand=["items", "latest_invoice"]
+            )
+
             current_period_start = sub["current_period_start"]
             current_period_end = sub["current_period_end"]
 
