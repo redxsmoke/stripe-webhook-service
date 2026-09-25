@@ -34,6 +34,9 @@ async def stripe_webhook(request: Request):
     event_type = event["type"]
     data = event["data"]["object"]
 
+    print("DEBUG EVENT TYPE:", event_type)
+    print("DEBUG RAW EVENT OBJECT:", data)
+
     db = await get_db()
 
     try:
@@ -46,6 +49,8 @@ async def stripe_webhook(request: Request):
                 expand=["line_items"],
             )
             session_data = session.to_dict()
+
+            print("DEBUG CHECKOUT SESSION DATA:", session_data)
 
             stripe_sub_id = session_data.get("subscription")
             stripe_customer_id = session_data.get("customer")
@@ -61,6 +66,15 @@ async def stripe_webhook(request: Request):
             guild_id = int(metadata.get("guild_id"))
             admin_id = int(metadata.get("admin_id"))
 
+            print("DEBUG CHECKOUT METADATA:", {
+                "vendor_id": vendor_id,
+                "guild_id": guild_id,
+                "admin_id": admin_id,
+                "price_id": price_id,
+                "stripe_sub_id": stripe_sub_id,
+                "stripe_customer_id": stripe_customer_id,
+            })
+
             existing = await db.fetchrow(
                 """
                 SELECT subscription_id
@@ -70,7 +84,10 @@ async def stripe_webhook(request: Request):
                 stripe_sub_id,
             )
 
+            print("DEBUG EXISTING SUB ROW:", existing)
+
             if not existing:
+                print("DEBUG CANCEL OTHER SUBSCRIPTIONS FOR GUILD:", guild_id)
                 await db.execute(
                     """
                     UPDATE subscriptions
@@ -82,6 +99,7 @@ async def stripe_webhook(request: Request):
                     stripe_sub_id,
                 )
 
+                print("DEBUG INSERT NEW SUBSCRIPTION ROW")
                 await db.execute(
                     """
                     INSERT INTO subscriptions (
@@ -123,7 +141,16 @@ async def stripe_webhook(request: Request):
                 stripe_sub_id,
             )
 
+            print("DEBUG SUBSCRIPTION_PK ROW:", sub_row)
+
             subscription_pk = sub_row["subscription_id"]
+
+            print("DEBUG INSERT/UPDATE GUILD_SETTINGS ON CHECKOUT:", {
+                "guild_id": guild_id,
+                "admin_id": admin_id,
+                "subscription_pk": subscription_pk,
+                "vendor_id": vendor_id,
+            })
 
             await db.execute(
                 """
@@ -172,46 +199,78 @@ async def stripe_webhook(request: Request):
             current_period_start = data["current_period_start"]
             current_period_end = data["current_period_end"]
 
-            await db.execute(
-                """
-                UPDATE subscriptions
-                SET status = $2,
-                    cancel_at_period_end = COALESCE($3::boolean, FALSE),
-                    current_period_start = to_timestamp($4::double precision),
-                    current_period_end = to_timestamp($5::double precision),
-                    updated_at = NOW()
-                WHERE stripe_subscription_id = $1
-                """,
-                stripe_sub_id,
-                status,
-                cancel_at_period_end,
-                current_period_start,
-                current_period_end,
-            )
+            print("DEBUG SUBSCRIPTION.CREATED PARAMS:", {
+                "stripe_sub_id": stripe_sub_id,
+                "status": status,
+                "cancel_at_period_end": cancel_at_period_end,
+                "current_period_start": current_period_start,
+                "current_period_end": current_period_end,
+            })
 
-            await db.execute(
-                """
-                UPDATE guild_settings
-                SET license_active = CASE WHEN $2 = 'active' THEN TRUE ELSE FALSE END,
-                    license_last_checked = NOW(),
-                    license_expires_at = to_timestamp($5::double precision),
-                    subscription_id = (
-                        SELECT subscription_id
+            try:
+                print("DEBUG SQL subscriptions (created) about to run")
+                await db.execute(
+                    """
+                    UPDATE subscriptions
+                    SET status = $2,
+                        cancel_at_period_end = COALESCE($3::boolean, FALSE),
+                        current_period_start = to_timestamp($4::double precision),
+                        current_period_end = to_timestamp($5::double precision),
+                        updated_at = NOW()
+                    WHERE stripe_subscription_id = $1
+                    """,
+                    stripe_sub_id,
+                    status,
+                    cancel_at_period_end,
+                    current_period_start,
+                    current_period_end,
+                )
+            except Exception as e:
+                print("DEBUG ERROR subscriptions (created):", e)
+                print("DEBUG PARAM TYPES (created):", {
+                    "stripe_sub_id": type(stripe_sub_id),
+                    "status": type(status),
+                    "cancel_at_period_end": type(cancel_at_period_end),
+                    "current_period_start": type(current_period_start),
+                    "current_period_end": type(current_period_end),
+                })
+                raise
+
+            try:
+                print("DEBUG SQL guild_settings (created) about to run")
+                await db.execute(
+                    """
+                    UPDATE guild_settings
+                    SET license_active = CASE WHEN $2 = 'active' THEN TRUE ELSE FALSE END,
+                        license_last_checked = NOW(),
+                        license_expires_at = to_timestamp($5::double precision),
+                        subscription_id = (
+                            SELECT subscription_id
+                            FROM subscriptions
+                            WHERE stripe_subscription_id = $1
+                        )
+                    WHERE guild_id = (
+                        SELECT guild_id
                         FROM subscriptions
                         WHERE stripe_subscription_id = $1
                     )
-                WHERE guild_id = (
-                    SELECT guild_id
-                    FROM subscriptions
-                    WHERE stripe_subscription_id = $1
+                    """,
+                    stripe_sub_id,
+                    status,
+                    cancel_at_period_end,
+                    current_period_start,
+                    current_period_end,
                 )
-                """,
-                stripe_sub_id,
-                status,
-                cancel_at_period_end,
-                current_period_start,
-                current_period_end,
-            )
+            except Exception as e:
+                print("DEBUG ERROR guild_settings (created):", e)
+                print("DEBUG PARAM TYPES (created guild):", {
+                    "stripe_sub_id": type(stripe_sub_id),
+                    "status": type(status),
+                    "cancel_at_period_end": type(cancel_at_period_end),
+                    "current_period_start": type(current_period_start),
+                    "current_period_end": type(current_period_end),
+                })
+                raise
 
             print(
                 f"[STRIPE] Subscription created ({stripe_sub_id}) "
@@ -228,46 +287,78 @@ async def stripe_webhook(request: Request):
             current_period_start = data["current_period_start"]
             current_period_end = data["current_period_end"]
 
-            await db.execute(
-                """
-                UPDATE subscriptions
-                SET status = $2,
-                    cancel_at_period_end = COALESCE($3::boolean, FALSE),
-                    current_period_start = to_timestamp($4::double precision),
-                    current_period_end = to_timestamp($5::double precision),
-                    updated_at = NOW()
-                WHERE stripe_subscription_id = $1
-                """,
-                stripe_sub_id,
-                status,
-                cancel_at_period_end,
-                current_period_start,
-                current_period_end,
-            )
+            print("DEBUG SUBSCRIPTION.UPDATED PARAMS:", {
+                "stripe_sub_id": stripe_sub_id,
+                "status": status,
+                "cancel_at_period_end": cancel_at_period_end,
+                "current_period_start": current_period_start,
+                "current_period_end": current_period_end,
+            })
 
-            await db.execute(
-                """
-                UPDATE guild_settings
-                SET license_active = CASE WHEN $2 = 'active' THEN TRUE ELSE FALSE END,
-                    license_last_checked = NOW(),
-                    license_expires_at = to_timestamp($5::double precision),
-                    subscription_id = (
-                        SELECT subscription_id
+            try:
+                print("DEBUG SQL subscriptions (updated) about to run")
+                await db.execute(
+                    """
+                    UPDATE subscriptions
+                    SET status = $2,
+                        cancel_at_period_end = COALESCE($3::boolean, FALSE),
+                        current_period_start = to_timestamp($4::double precision),
+                        current_period_end = to_timestamp($5::double precision),
+                        updated_at = NOW()
+                    WHERE stripe_subscription_id = $1
+                    """,
+                    stripe_sub_id,
+                    status,
+                    cancel_at_period_end,
+                    current_period_start,
+                    current_period_end,
+                )
+            except Exception as e:
+                print("DEBUG ERROR subscriptions (updated):", e)
+                print("DEBUG PARAM TYPES (updated):", {
+                    "stripe_sub_id": type(stripe_sub_id),
+                    "status": type(status),
+                    "cancel_at_period_end": type(cancel_at_period_end),
+                    "current_period_start": type(current_period_start),
+                    "current_period_end": type(current_period_end),
+                })
+                raise
+
+            try:
+                print("DEBUG SQL guild_settings (updated) about to run")
+                await db.execute(
+                    """
+                    UPDATE guild_settings
+                    SET license_active = CASE WHEN $2 = 'active' THEN TRUE ELSE FALSE END,
+                        license_last_checked = NOW(),
+                        license_expires_at = to_timestamp($5::double precision),
+                        subscription_id = (
+                            SELECT subscription_id
+                            FROM subscriptions
+                            WHERE stripe_subscription_id = $1
+                        )
+                    WHERE guild_id = (
+                        SELECT guild_id
                         FROM subscriptions
                         WHERE stripe_subscription_id = $1
                     )
-                WHERE guild_id = (
-                    SELECT guild_id
-                    FROM subscriptions
-                    WHERE stripe_subscription_id = $1
+                    """,
+                    stripe_sub_id,
+                    status,
+                    cancel_at_period_end,
+                    current_period_start,
+                    current_period_end,
                 )
-                """,
-                stripe_sub_id,
-                status,
-                cancel_at_period_end,
-                current_period_start,
-                current_period_end,
-            )
+            except Exception as e:
+                print("DEBUG ERROR guild_settings (updated):", e)
+                print("DEBUG PARAM TYPES (updated guild):", {
+                    "stripe_sub_id": type(stripe_sub_id),
+                    "status": type(status),
+                    "cancel_at_period_end": type(cancel_at_period_end),
+                    "current_period_start": type(current_period_start),
+                    "current_period_end": type(current_period_end),
+                })
+                raise
 
             print(
                 f"[STRIPE] Subscription updated ({stripe_sub_id}) → {status} "
@@ -280,39 +371,58 @@ async def stripe_webhook(request: Request):
         elif event_type == "invoice.payment_succeeded":
             stripe_sub_id = data.get("subscription")
 
+            print("DEBUG INVOICE.PAYMENT_SUCCEEDED DATA:", data)
+            print("DEBUG INVOICE.PAYMENT_SUCCEEDED SUB_ID:", stripe_sub_id)
+
             if not stripe_sub_id:
+                print("DEBUG INVOICE.PAYMENT_SUCCEEDED NO SUB_ID, SKIP")
                 return {"status": "ok"}
 
-            # Only mark as paid/active; do NOT touch period dates
-            await db.execute(
-                """
-                UPDATE subscriptions
-                SET status = 'active',
-                    cancel_at_period_end = FALSE,
-                    updated_at = NOW()
-                WHERE stripe_subscription_id = $1
-                """,
-                stripe_sub_id,
-            )
+            try:
+                print("DEBUG SQL subscriptions (invoice succeeded) about to run")
+                await db.execute(
+                    """
+                    UPDATE subscriptions
+                    SET status = 'active',
+                        cancel_at_period_end = FALSE,
+                        updated_at = NOW()
+                    WHERE stripe_subscription_id = $1
+                    """,
+                    stripe_sub_id,
+                )
+            except Exception as e:
+                print("DEBUG ERROR subscriptions (invoice succeeded):", e)
+                print("DEBUG PARAM TYPES (invoice succeeded):", {
+                    "stripe_sub_id": type(stripe_sub_id),
+                })
+                raise
 
-            await db.execute(
-                """
-                UPDATE guild_settings
-                SET license_active = TRUE,
-                    license_last_checked = NOW(),
-                    subscription_id = (
-                        SELECT subscription_id
+            try:
+                print("DEBUG SQL guild_settings (invoice succeeded) about to run")
+                await db.execute(
+                    """
+                    UPDATE guild_settings
+                    SET license_active = TRUE,
+                        license_last_checked = NOW(),
+                        subscription_id = (
+                            SELECT subscription_id
+                            FROM subscriptions
+                            WHERE stripe_subscription_id = $1
+                        )
+                    WHERE guild_id = (
+                        SELECT guild_id
                         FROM subscriptions
                         WHERE stripe_subscription_id = $1
                     )
-                WHERE guild_id = (
-                    SELECT guild_id
-                    FROM subscriptions
-                    WHERE stripe_subscription_id = $1
+                    """,
+                    stripe_sub_id,
                 )
-                """,
-                stripe_sub_id,
-            )
+            except Exception as e:
+                print("DEBUG ERROR guild_settings (invoice succeeded):", e)
+                print("DEBUG PARAM TYPES (invoice succeeded guild):", {
+                    "stripe_sub_id": type(stripe_sub_id),
+                })
+                raise
 
             print(f"[STRIPE] Payment succeeded ({stripe_sub_id})")
 
@@ -322,38 +432,58 @@ async def stripe_webhook(request: Request):
         elif event_type == "invoice.payment_failed":
             stripe_sub_id = data.get("subscription")
 
+            print("DEBUG INVOICE.PAYMENT_FAILED DATA:", data)
+            print("DEBUG INVOICE.PAYMENT_FAILED SUB_ID:", stripe_sub_id)
+
             if not stripe_sub_id:
+                print("DEBUG INVOICE.PAYMENT_FAILED NO SUB_ID, SKIP")
                 return {"status": "ok"}
 
-            await db.execute(
-                """
-                UPDATE subscriptions
-                SET status = 'past_due',
-                    cancel_at_period_end = TRUE,
-                    updated_at = NOW()
-                WHERE stripe_subscription_id = $1
-                """,
-                stripe_sub_id,
-            )
+            try:
+                print("DEBUG SQL subscriptions (invoice failed) about to run")
+                await db.execute(
+                    """
+                    UPDATE subscriptions
+                    SET status = 'past_due',
+                        cancel_at_period_end = TRUE,
+                        updated_at = NOW()
+                    WHERE stripe_subscription_id = $1
+                    """,
+                    stripe_sub_id,
+                )
+            except Exception as e:
+                print("DEBUG ERROR subscriptions (invoice failed):", e)
+                print("DEBUG PARAM TYPES (invoice failed):", {
+                    "stripe_sub_id": type(stripe_sub_id),
+                })
+                raise
 
-            await db.execute(
-                """
-                UPDATE guild_settings
-                SET license_active = FALSE,
-                    license_last_checked = NOW(),
-                    subscription_id = (
-                        SELECT subscription_id
+            try:
+                print("DEBUG SQL guild_settings (invoice failed) about to run")
+                await db.execute(
+                    """
+                    UPDATE guild_settings
+                    SET license_active = FALSE,
+                        license_last_checked = NOW(),
+                        subscription_id = (
+                            SELECT subscription_id
+                            FROM subscriptions
+                            WHERE stripe_subscription_id = $1
+                        )
+                    WHERE guild_id = (
+                        SELECT guild_id
                         FROM subscriptions
                         WHERE stripe_subscription_id = $1
                     )
-                WHERE guild_id = (
-                    SELECT guild_id
-                    FROM subscriptions
-                    WHERE stripe_subscription_id = $1
+                    """,
+                    stripe_sub_id,
                 )
-                """,
-                stripe_sub_id,
-            )
+            except Exception as e:
+                print("DEBUG ERROR guild_settings (invoice failed):", e)
+                print("DEBUG PARAM TYPES (invoice failed guild):", {
+                    "stripe_sub_id": type(stripe_sub_id),
+                })
+                raise
 
             print(f"[STRIPE] Payment failed ({stripe_sub_id})")
 
