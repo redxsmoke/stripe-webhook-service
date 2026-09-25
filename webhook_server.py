@@ -55,7 +55,7 @@ async def stripe_webhook(request: Request):
                 print("[STRIPE] No subscription ID — skipping")
                 return {"status": "ok"}
 
-            # Retrieve full subscription object (Stripe omits fields in webhook)
+            # Retrieve full subscription object
             sub = stripe.Subscription.retrieve(stripe_sub_id)
 
             price_id = session_data["line_items"]["data"][0]["price"]["id"]
@@ -143,6 +143,55 @@ async def stripe_webhook(request: Request):
             print(f"[STRIPE] Subscription created ({stripe_sub_id})")
 
         # ============================================================
+        # SUBSCRIPTION CREATED
+        # ============================================================
+        elif event_type == "customer.subscription.created":
+            stripe_sub_id = data["id"]
+
+            sub = stripe.Subscription.retrieve(
+                stripe_sub_id,
+                expand=["latest_invoice"]
+            )
+
+            status = sub["status"]
+            cancel_at_period_end = sub["cancel_at_period_end"]
+            current_period_start = sub["current_period_start"]
+            current_period_end = sub["current_period_end"]
+
+            await db.execute("""
+                UPDATE subscriptions
+                SET status = $2,
+                    cancel_at_period_end = $3,
+                    current_period_start = to_timestamp($4),
+                    current_period_end = to_timestamp($5),
+                    updated_at = NOW()
+                WHERE stripe_subscription_id = $1
+            """, stripe_sub_id, status, cancel_at_period_end,
+                 current_period_start, current_period_end)
+
+            await db.execute("""
+                UPDATE guild_settings
+                SET license_active = CASE WHEN $2 = 'active' THEN TRUE ELSE FALSE END,
+                    license_last_checked = NOW(),
+                    license_expires_at = to_timestamp($5),
+                    subscription_id = (
+                        SELECT subscription_id
+                        FROM subscriptions
+                        WHERE stripe_subscription_id = $1
+                    )
+                WHERE guild_id = (
+                    SELECT guild_id
+                    FROM subscriptions
+                    WHERE stripe_subscription_id = $1
+                )
+            """, stripe_sub_id, status, current_period_end)
+
+            print(
+                f"[STRIPE] Subscription created ({stripe_sub_id}) "
+                f"period_start={current_period_start} period_end={current_period_end}"
+            )
+
+        # ============================================================
         # SUBSCRIPTION UPDATED
         # ============================================================
         elif event_type == "customer.subscription.updated":
@@ -150,7 +199,6 @@ async def stripe_webhook(request: Request):
             status = data["status"]
             cancel_at_period_end = data["cancel_at_period_end"]
 
-            # Retrieve full subscription object (Stripe omits fields in webhook)
             sub = stripe.Subscription.retrieve(
                 stripe_sub_id,
                 expand=["latest_invoice"]
@@ -201,7 +249,6 @@ async def stripe_webhook(request: Request):
             if not stripe_sub_id:
                 return {"status": "ok"}
 
-            # Retrieve full invoice with expanded line items
             event_full = stripe.Event.retrieve(
                 event["id"],
                 expand=["data.object.lines"]
