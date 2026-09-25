@@ -55,11 +55,8 @@ async def stripe_webhook(request: Request):
                 print("[STRIPE] No subscription ID — skipping")
                 return {"status": "ok"}
 
-            try:
-                sub = stripe.Subscription.retrieve(stripe_sub_id)
-            except stripe.error.InvalidRequestError:
-                print(f"[STRIPE] Subscription {stripe_sub_id} does not exist — skipping")
-                return {"status": "ok"}
+            # Retrieve full subscription object (Stripe omits fields in webhook)
+            sub = stripe.Subscription.retrieve(stripe_sub_id)
 
             price_id = session_data["line_items"]["data"][0]["price"]["id"]
 
@@ -67,9 +64,6 @@ async def stripe_webhook(request: Request):
             vendor_id = int(metadata.get("vendor_id"))
             guild_id = int(metadata.get("guild_id"))
             admin_id = int(metadata.get("admin_id"))
-
-            price = stripe.Price.retrieve(price_id)
-            amount = price["unit_amount"]
 
             existing = await db.fetchrow("""
                 SELECT subscription_id
@@ -156,35 +150,31 @@ async def stripe_webhook(request: Request):
             status = data["status"]
             cancel_at_period_end = data["cancel_at_period_end"]
 
-            # These are the epoch timestamps you pasted from Stripe
-            current_period_start = data.get("current_period_start")
-            current_period_end = data.get("current_period_end")
+            # Retrieve full subscription object (Stripe omits fields in webhook)
+            sub = stripe.Subscription.retrieve(
+                stripe_sub_id,
+                expand=["latest_invoice"]
+            )
+
+            current_period_start = sub["current_period_start"]
+            current_period_end = sub["current_period_end"]
 
             await db.execute("""
                 UPDATE subscriptions
                 SET status = $2,
                     cancel_at_period_end = $3,
-                    current_period_start = CASE
-                        WHEN $4 IS NOT NULL THEN to_timestamp($4)
-                        ELSE current_period_start
-                    END,
-                    current_period_end = CASE
-                        WHEN $5 IS NOT NULL THEN to_timestamp($5)
-                        ELSE current_period_end
-                    END,
+                    current_period_start = to_timestamp($4),
+                    current_period_end = to_timestamp($5),
                     updated_at = NOW()
                 WHERE stripe_subscription_id = $1
-            """, stripe_sub_id, status, cancel_at_period_end, current_period_start, current_period_end)
+            """, stripe_sub_id, status, cancel_at_period_end,
+                 current_period_start, current_period_end)
 
             await db.execute("""
                 UPDATE guild_settings
                 SET license_active = CASE WHEN $2 = 'active' THEN TRUE ELSE FALSE END,
                     license_last_checked = NOW(),
-                    license_expires_at = CASE
-                        WHEN $5 IS NOT NULL THEN to_timestamp($5)
-                        WHEN $2 = 'canceled' THEN NOW()
-                        ELSE license_expires_at
-                    END,
+                    license_expires_at = to_timestamp($5),
                     subscription_id = (
                         SELECT subscription_id
                         FROM subscriptions
@@ -211,10 +201,17 @@ async def stripe_webhook(request: Request):
             if not stripe_sub_id:
                 return {"status": "ok"}
 
-            # Optional: keep this as a safety refresh from the subscription object
-            sub = stripe.Subscription.retrieve(stripe_sub_id)
-            current_period_start = sub["current_period_start"]
-            current_period_end = sub["current_period_end"]
+            # Retrieve full invoice with expanded line items
+            event_full = stripe.Event.retrieve(
+                event["id"],
+                expand=["data.object.lines"]
+            )
+
+            invoice = event_full["data"]["object"]
+            line_item = invoice["lines"]["data"][0]
+
+            period_start = line_item["period"]["start"]
+            period_end = line_item["period"]["end"]
 
             await db.execute("""
                 UPDATE subscriptions
@@ -224,12 +221,12 @@ async def stripe_webhook(request: Request):
                     current_period_end = to_timestamp($3),
                     updated_at = NOW()
                 WHERE stripe_subscription_id = $1
-            """, stripe_sub_id, current_period_start, current_period_end)
+            """, stripe_sub_id, period_start, period_end)
 
             await db.execute("""
                 UPDATE guild_settings
                 SET license_active = TRUE,
-                    license_expires_at = to_timestamp($2),
+                    license_expires_at = to_timestamp($3),
                     license_last_checked = NOW(),
                     subscription_id = (
                         SELECT subscription_id
@@ -241,11 +238,11 @@ async def stripe_webhook(request: Request):
                     FROM subscriptions
                     WHERE stripe_subscription_id = $1
                 )
-            """, stripe_sub_id, current_period_end)
+            """, stripe_sub_id, period_end)
 
             print(
                 f"[STRIPE] Payment succeeded ({stripe_sub_id}) "
-                f"period_start={current_period_start} period_end={current_period_end}"
+                f"period_start={period_start} period_end={period_end}"
             )
 
         # ============================================================
@@ -282,6 +279,7 @@ async def stripe_webhook(request: Request):
             """, stripe_sub_id)
 
             print(f"[STRIPE] Payment failed ({stripe_sub_id})")
+
     finally:
         await db.close()
 
